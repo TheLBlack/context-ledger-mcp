@@ -61,10 +61,10 @@ def create_server() -> FastMCP:
         content: str,
         authority: Authority,
         source: str | None = None,
-        applies_to: str | None = None,
+        applies_to: list[str] | None = None,
         tags: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Record durable knowledge, optionally scoped to a project-relative path and tagged for search."""
+        """Record durable knowledge, optionally scoped to project-relative files or directories."""
         with Ledger(database_path(Path(project_path))) as ledger:
             return ledger.record(kind, title, content, authority, source, applies_to, tags).to_dict()
 

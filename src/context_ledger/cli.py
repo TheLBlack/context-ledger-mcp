@@ -60,7 +60,11 @@ def build_parser() -> argparse.ArgumentParser:
     record.add_argument("content")
     record.add_argument("--authority", choices=sorted(AUTHORITIES), required=True)
     record.add_argument("--source")
-    record.add_argument("--applies-to", help="project-relative file or directory governed by this record")
+    record.add_argument(
+        "--applies-to",
+        nargs="+",
+        help="project-relative files or directories governed by this record",
+    )
     record.add_argument("--tags", nargs="+", help="one to three stable search phrases")
 
     supersede = subparsers.add_parser("supersede", help="mark a record obsolete")

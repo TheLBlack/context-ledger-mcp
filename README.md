@@ -147,7 +147,7 @@ context-ledger record --project "$PROJECT_PATH" observation \
   "MCP handlers stay thin" \
   "Keep storage and matching logic in ledger.py" \
   --authority code_observed \
-  --applies-to src/context_ledger/server.py
+  --applies-to src/context_ledger/server.py tests/test_server.py
 
 # Preserve lifecycle history
 context-ledger supersede --project "$PROJECT_PATH" 1 --replacement 2
@@ -191,13 +191,15 @@ The MCP server provides five tools:
 
 - `get_file_context(project_path, paths)`: retrieve active knowledge attached to files or parent directories.
 - `search_memory(project_path, ...)`: search active or historical records using tags, a phrase, or both.
-- `record_memory(project_path, ...)`: add durable knowledge with optional `applies_to` and `tags`.
+- `record_memory(project_path, ...)`: add broad knowledge or rules scoped to an `applies_to` list.
 - `supersede_memory(project_path, ...)`: retire an obsolete record while preserving history.
 - `dispute_memory(project_path, ...)`: flag unresolved conflicting knowledge.
 
-`applies_to` is a project-relative file or directory path. File lookup accepts several paths in one call, normalizes separators, and matches exact paths plus ancestor directories. It does not scan the project. Records without `applies_to` remain available through `search_memory`.
+`applies_to` is a list of project-relative files or directories governed by a record. File lookup accepts several paths in one call, normalizes separators, and returns records whose scopes match an exact path or one of its parent directories. A rule spanning separate packages lists each governed file or directory; an empty `applies_to` means genuinely broad project or domain knowledge, not merely multi-package scope.
 
-Search is lexical SQLite FTS5 with BM25 ranking across titles, content, sources, and tags. It accepts one to three exact tag phrases, a free-text phrase whose terms are matched broadly, or both; matches are combined with OR. Tags are lowercase phrases made from stable subsystem or domain nouns. There are no embeddings, vector search, automatic code indexing, or project scanning.
+Agents use both retrieval paths during development: `search_memory` recalls broad decisions using task language, while `get_file_context` retrieves rules for the intended or touched files. Recording mirrors that split. Before saving a scoped rule, inspect the instances it claims to govern to verify the scope and preserve real exceptions. Habitual corrections such as “we usually,” “we tend to,” “always,” and “never” are strong signals to record immediately when they express a durable convention.
+
+Search is lexical SQLite FTS5 with BM25 ranking across titles, content, sources, and tags. It accepts one to three exact tag phrases, a free-text phrase whose terms are matched broadly, or both; matches are combined with OR. Tags describe a future task that should retrieve the knowledge—for example, `add response field` rather than only `mappers`. There are no embeddings, vector search, automatic code indexing, or project scanning.
 
 ## Limitations and ideas
 

@@ -60,6 +60,7 @@ async def test_mcp_tools_are_registered_and_callable(tmp_path: Path):
     search_tags_schema = tools["search_memory"].inputSchema["properties"]["tags"]["anyOf"][0]
     assert search_tags_schema["items"]["type"] == "string"
     assert tools["record_memory"].inputSchema["properties"]["tags"]["anyOf"][0]["type"] == "array"
+    assert tools["record_memory"].inputSchema["properties"]["applies_to"]["anyOf"][0]["type"] == "array"
 
     resources = {str(resource.uri): resource for resource in await server.list_resources()}
     assert resources["ledger://instructions"].mimeType == "text/markdown"
@@ -92,7 +93,7 @@ async def test_mcp_tools_are_registered_and_callable(tmp_path: Path):
             "title": "Server rule",
             "content": "Keep MCP handlers small",
             "authority": "code_observed",
-            "applies_to": "src/context_ledger",
+            "applies_to": ["src/context_ledger", "tests/test_server.py"],
         },
     )
     _, file_context = await server.call_tool(

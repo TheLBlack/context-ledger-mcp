@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from dataclasses import asdict, dataclass
@@ -49,7 +50,7 @@ class LedgerRecord:
     authority: str
     status: str
     source: str | None
-    applies_to: str | None
+    applies_to: list[str] | None
     tags: str | None
     created_at: str
     superseded_by: int | None
@@ -131,7 +132,10 @@ class Ledger:
 
     @staticmethod
     def _record(row: sqlite3.Row) -> LedgerRecord:
-        return LedgerRecord(**dict(row))
+        values = dict(row)
+        if values["applies_to"] is not None:
+            values["applies_to"] = json.loads(values["applies_to"])
+        return LedgerRecord(**values)
 
     def record(
         self,
@@ -140,7 +144,7 @@ class Ledger:
         content: str,
         authority: Authority,
         source: str | None = None,
-        applies_to: str | None = None,
+        applies_to: list[str] | None = None,
         tags: list[str] | None = None,
     ) -> LedgerRecord:
         if kind not in KINDS:
@@ -149,13 +153,22 @@ class Ledger:
             raise ValueError(f"Invalid authority: {authority}")
         if not title.strip() or not content.strip():
             raise ValueError("title and content must not be empty")
-        scope = _normalize_scope(applies_to) if applies_to is not None else None
+        scopes = list(dict.fromkeys(_normalize_scope(path) for path in applies_to)) if applies_to else None
         compact_tags = ", ".join(_tag_phrases(tags)) if tags is not None else None
         now = datetime.now(timezone.utc).isoformat()
         cursor = self.connection.execute(
             """INSERT INTO records(kind,title,content,authority,source,applies_to,tags,created_at)
                VALUES(?,?,?,?,?,?,?,?)""",
-            (kind, title.strip(), content.strip(), authority, source, scope, compact_tags, now),
+            (
+                kind,
+                title.strip(),
+                content.strip(),
+                authority,
+                source,
+                json.dumps(scopes) if scopes is not None else None,
+                compact_tags,
+                now,
+            ),
         )
         self.connection.commit()
         return self.get(cursor.lastrowid)
@@ -218,14 +231,19 @@ class Ledger:
         ).fetchall()
         for row in rows:
             record = self._record(row)
-            scope = record.applies_to
-            if scope is not None and any(
-                scope == "." or path == scope or path.startswith(f"{scope}/") for path in normalized
+            scopes = record.applies_to
+            if scopes is not None and any(
+                scope == "." or path == scope or path.startswith(f"{scope}/")
+                for scope in scopes
+                for path in normalized
             ):
                 if record.id not in seen:
                     matches.append(record)
                     seen.add(record.id)
-        matches.sort(key=lambda item: (len(item.applies_to or ""), item.id), reverse=True)
+        matches.sort(
+            key=lambda item: (max((len(scope) for scope in item.applies_to or []), default=0), item.id),
+            reverse=True,
+        )
         return matches[: max(1, min(limit, 100))]
 
     def supersede(self, record_id: int, replacement_id: int | None = None) -> LedgerRecord:

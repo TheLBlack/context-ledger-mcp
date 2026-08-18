@@ -78,22 +78,41 @@ def test_rejects_invalid_classification(ledger: Ledger):
 
 def test_file_context_includes_exact_file_and_parent_directories(ledger: Ledger):
     root = ledger.record(
-        "documentation", "Repository rule", "Applies everywhere", "code_observed", applies_to="."
+        "documentation", "Repository rule", "Applies everywhere", "code_observed", applies_to=["."]
     )
     package = ledger.record(
-        "observation", "Package rule", "Keep adapters thin", "code_observed", applies_to="src/adapters/"
+        "observation", "Package rule", "Keep adapters thin", "code_observed", applies_to=["src/adapters/"]
     )
     exact = ledger.record(
-        "decision", "Module rule", "Preserve this wire format", "user_confirmed", applies_to="src/adapters/api.py"
+        "decision",
+        "Module rule",
+        "Preserve this wire format",
+        "user_confirmed",
+        applies_to=["src/adapters/api.py"],
     )
     unrelated = ledger.record(
-        "observation", "Other rule", "Only for docs", "code_observed", applies_to="docs"
+        "observation", "Other rule", "Only for docs", "code_observed", applies_to=["docs"]
     )
 
     found = ledger.file_context(["./src/adapters/api.py", "src/domain.py"])
 
     assert {item.id for item in found} == {root.id, package.id, exact.id}
     assert unrelated.id not in {item.id for item in found}
+
+
+def test_file_context_matches_any_explicit_scope(ledger: Ledger):
+    rule = ledger.record(
+        "decision",
+        "Shared boundary rule",
+        "Keep both adapters aligned",
+        "user_confirmed",
+        applies_to=["src/http", "src/workers/jobs.py"],
+    )
+
+    assert rule.applies_to == ["src/http", "src/workers/jobs.py"]
+    assert ledger.file_context(["src/http/routes.py"])[0].id == rule.id
+    assert ledger.file_context(["src/workers/jobs.py"])[0].id == rule.id
+    assert ledger.file_context(["src/domain/model.py"]) == []
 
 
 def test_tags_are_searchable_without_polluting_file_context(ledger: Ledger):
