@@ -7,7 +7,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from .ledger import Authority, Ledger, RecordKind
-from .paths import resolve_database_path
+from .paths import database_path
 
 
 def load_instructions() -> str:
@@ -18,8 +18,7 @@ def load_harness_snippet() -> str:
     return files("context_ledger.prompts").joinpath("harness_snippet.md").read_text(encoding="utf-8")
 
 
-def create_server(repository: Path | None = None, database: Path | None = None) -> FastMCP:
-    ledger = Ledger(resolve_database_path(repository, database))
+def create_server() -> FastMCP:
     server = FastMCP("ContextLedger", instructions=load_instructions())
 
     @server.resource(
@@ -34,32 +33,53 @@ def create_server(repository: Path | None = None, database: Path | None = None) 
         return load_instructions()
 
     @server.tool()
-    def get_project_context(task: str, limit: int = 12) -> list[dict[str, Any]]:
-        """Get active, durable project knowledge relevant to the task before planning or editing."""
-        return [item.to_dict() for item in ledger.context(task, limit=limit)]
+    def get_file_context(project_path: str, paths: list[str], limit: int = 20) -> list[dict[str, Any]]:
+        """Get active rules for files, including rules attached to their parent directories."""
+        with Ledger(database_path(Path(project_path))) as ledger:
+            return [item.to_dict() for item in ledger.file_context(paths, limit=limit)]
 
     @server.tool()
     def search_memory(
-        query: str, kind: RecordKind | None = None, include_inactive: bool = False, limit: int = 10
+        project_path: str,
+        tags: list[str] | None = None,
+        phrase: str | None = None,
+        include_inactive: bool = False,
+        limit: int = 10,
     ) -> list[dict[str, Any]]:
-        """Search durable project memory. Set include_inactive to inspect superseded history."""
-        return [item.to_dict() for item in ledger.search(query, kind=kind, include_inactive=include_inactive, limit=limit)]
+        """Search by 1–3 exact tags, a broad free-text phrase, or both."""
+        with Ledger(database_path(Path(project_path))) as ledger:
+            return [
+                item.to_dict()
+                for item in ledger.search(tags, phrase, include_inactive=include_inactive, limit=limit)
+            ]
 
     @server.tool()
     def record_memory(
-        kind: RecordKind, title: str, content: str, authority: Authority, source: str | None = None
+        project_path: str,
+        kind: RecordKind,
+        title: str,
+        content: str,
+        authority: Authority,
+        source: str | None = None,
+        applies_to: str | None = None,
+        tags: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Record a durable conclusion, classified as decision, observation, documentation, or failed_attempt."""
-        return ledger.record(kind, title, content, authority, source).to_dict()
+        """Record durable knowledge, optionally scoped to a project-relative path and tagged for search."""
+        with Ledger(database_path(Path(project_path))) as ledger:
+            return ledger.record(kind, title, content, authority, source, applies_to, tags).to_dict()
 
     @server.tool()
-    def supersede_memory(record_id: int, replacement_id: int | None = None) -> dict[str, Any]:
+    def supersede_memory(
+        project_path: str, record_id: int, replacement_id: int | None = None
+    ) -> dict[str, Any]:
         """Mark obsolete memory superseded, optionally linking its active replacement."""
-        return ledger.supersede(record_id, replacement_id).to_dict()
+        with Ledger(database_path(Path(project_path))) as ledger:
+            return ledger.supersede(record_id, replacement_id).to_dict()
 
     @server.tool()
-    def dispute_memory(record_id: int) -> dict[str, Any]:
+    def dispute_memory(project_path: str, record_id: int) -> dict[str, Any]:
         """Mark a record disputed when evidence conflicts but no replacement is established."""
-        return ledger.dispute(record_id).to_dict()
+        with Ledger(database_path(Path(project_path))) as ledger:
+            return ledger.dispute(record_id).to_dict()
 
     return server

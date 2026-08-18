@@ -16,12 +16,28 @@ AUTHORITIES = frozenset(("user_confirmed", "code_observed", "agent_inferred"))
 LIFECYCLES = frozenset(("active", "superseded", "disputed"))
 
 
-def _fts_query(text: str) -> str:
-    """Turn plain task text into a safe, broad FTS query."""
-    terms = re.findall(r"[\w-]+", text, flags=re.UNICODE)
-    if not terms:
-        raise ValueError("query must contain searchable text")
-    return " OR ".join(f'"{term.replace(chr(34), chr(34) * 2)}"' for term in terms)
+def _tag_phrases(tags: list[str]) -> list[str]:
+    phrases: list[str] = []
+    for tag in tags:
+        terms = re.findall(r"[\w-]+", tag, flags=re.UNICODE)
+        if terms:
+            phrases.append(" ".join(terms).lower())
+    phrases = list(dict.fromkeys(phrases))
+    if not phrases:
+        raise ValueError("tags must contain searchable text")
+    if len(phrases) > 3:
+        raise ValueError("at most 3 tags are allowed")
+    return phrases
+
+
+def _fts_query(tags: list[str] | None, phrase: str | None) -> str:
+    """Build a query from exact tag phrases and broad free-text terms."""
+    parts = [f'"{tag}"' for tag in _tag_phrases(tags)] if tags else []
+    if phrase is not None:
+        parts.extend(f'"{term}"' for term in re.findall(r"[\w-]+", phrase, flags=re.UNICODE))
+    if not parts:
+        raise ValueError("provide at least one tag or a searchable phrase")
+    return " OR ".join(dict.fromkeys(parts))
 
 
 @dataclass(frozen=True)
@@ -33,6 +49,8 @@ class LedgerRecord:
     authority: str
     status: str
     source: str | None
+    applies_to: str | None
+    tags: str | None
     created_at: str
     superseded_by: int | None
 
@@ -49,27 +67,47 @@ CREATE TABLE IF NOT EXISTS records (
     authority TEXT NOT NULL CHECK(authority IN ('user_confirmed','code_observed','agent_inferred')),
     status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','superseded','disputed')),
     source TEXT,
+    applies_to TEXT,
+    tags TEXT,
     created_at TEXT NOT NULL,
     superseded_by INTEGER REFERENCES records(id)
 );
+"""
+
+SEARCH_SCHEMA = """
 CREATE VIRTUAL TABLE IF NOT EXISTS records_fts USING fts5(
-    title, content, source, content='records', content_rowid='id'
+    title, content, source, tags, content='records', content_rowid='id'
 );
 CREATE TRIGGER IF NOT EXISTS records_ai AFTER INSERT ON records BEGIN
-    INSERT INTO records_fts(rowid, title, content, source)
-    VALUES (new.id, new.title, new.content, new.source);
+    INSERT INTO records_fts(rowid, title, content, source, tags)
+    VALUES (new.id, new.title, new.content, new.source, new.tags);
 END;
 CREATE TRIGGER IF NOT EXISTS records_ad AFTER DELETE ON records BEGIN
-    INSERT INTO records_fts(records_fts, rowid, title, content, source)
-    VALUES ('delete', old.id, old.title, old.content, old.source);
+    INSERT INTO records_fts(records_fts, rowid, title, content, source, tags)
+    VALUES ('delete', old.id, old.title, old.content, old.source, old.tags);
 END;
 CREATE TRIGGER IF NOT EXISTS records_au AFTER UPDATE ON records BEGIN
-    INSERT INTO records_fts(records_fts, rowid, title, content, source)
-    VALUES ('delete', old.id, old.title, old.content, old.source);
-    INSERT INTO records_fts(rowid, title, content, source)
-    VALUES (new.id, new.title, new.content, new.source);
+    INSERT INTO records_fts(records_fts, rowid, title, content, source, tags)
+    VALUES ('delete', old.id, old.title, old.content, old.source, old.tags);
+    INSERT INTO records_fts(rowid, title, content, source, tags)
+    VALUES (new.id, new.title, new.content, new.source, new.tags);
 END;
 """
+
+
+def _normalize_scope(path: str) -> str:
+    """Normalize a project-relative file or directory scope."""
+    value = path.strip().replace("\\", "/")
+    if not value:
+        raise ValueError("applies_to paths must not be empty")
+    while "//" in value:
+        value = value.replace("//", "/")
+    if value.startswith("./"):
+        value = value[2:]
+    value = value.rstrip("/") or "."
+    if value.startswith("/") or re.match(r"^[A-Za-z]:/", value) or value == ".." or value.startswith("../") or "/../" in value:
+        raise ValueError("applies_to paths must be project-relative and must not contain '..'")
+    return value
 
 
 class Ledger:
@@ -80,6 +118,7 @@ class Ledger:
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
         self.connection.executescript(SCHEMA)
+        self.connection.executescript(SEARCH_SCHEMA)
 
     def close(self) -> None:
         self.connection.close()
@@ -101,6 +140,8 @@ class Ledger:
         content: str,
         authority: Authority,
         source: str | None = None,
+        applies_to: str | None = None,
+        tags: list[str] | None = None,
     ) -> LedgerRecord:
         if kind not in KINDS:
             raise ValueError(f"Invalid kind: {kind}")
@@ -108,10 +149,13 @@ class Ledger:
             raise ValueError(f"Invalid authority: {authority}")
         if not title.strip() or not content.strip():
             raise ValueError("title and content must not be empty")
+        scope = _normalize_scope(applies_to) if applies_to is not None else None
+        compact_tags = ", ".join(_tag_phrases(tags)) if tags is not None else None
         now = datetime.now(timezone.utc).isoformat()
         cursor = self.connection.execute(
-            "INSERT INTO records(kind,title,content,authority,source,created_at) VALUES(?,?,?,?,?,?)",
-            (kind, title.strip(), content.strip(), authority, source, now),
+            """INSERT INTO records(kind,title,content,authority,source,applies_to,tags,created_at)
+               VALUES(?,?,?,?,?,?,?,?)""",
+            (kind, title.strip(), content.strip(), authority, source, scope, compact_tags, now),
         )
         self.connection.commit()
         return self.get(cursor.lastrowid)
@@ -122,16 +166,9 @@ class Ledger:
             raise KeyError(f"No record with id {record_id}")
         return self._record(row)
 
-    def list_records(
-        self, *, kind: RecordKind | None = None, include_inactive: bool = False, limit: int = 20
-    ) -> list[LedgerRecord]:
-        if kind is not None and kind not in KINDS:
-            raise ValueError(f"Invalid kind: {kind}")
+    def list_records(self, *, include_inactive: bool = False, limit: int = 20) -> list[LedgerRecord]:
         clauses: list[str] = []
         params: list[object] = []
-        if kind:
-            clauses.append("kind = ?")
-            params.append(kind)
         if not include_inactive:
             clauses.append("status = 'active'")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
@@ -150,17 +187,15 @@ class Ledger:
         return result
 
     def search(
-        self, query: str, *, kind: RecordKind | None = None, include_inactive: bool = False, limit: int = 10
+        self,
+        tags: list[str] | None = None,
+        phrase: str | None = None,
+        *,
+        include_inactive: bool = False,
+        limit: int = 10,
     ) -> list[LedgerRecord]:
-        if not query.strip():
-            raise ValueError("query must not be empty")
-        if kind is not None and kind not in KINDS:
-            raise ValueError(f"Invalid kind: {kind}")
         clauses = ["records_fts MATCH ?"]
-        params: list[object] = [_fts_query(query)]
-        if kind:
-            clauses.append("r.kind = ?")
-            params.append(kind)
+        params: list[object] = [_fts_query(tags, phrase)]
         if not include_inactive:
             clauses.append("r.status = 'active'")
         params.append(max(1, min(limit, 100)))
@@ -171,9 +206,27 @@ class Ledger:
         ).fetchall()
         return [self._record(row) for row in rows]
 
-    def context(self, task: str, *, limit: int = 12) -> list[LedgerRecord]:
-        """Retrieve compact active context relevant to a task."""
-        return self.search(task, limit=limit)
+    def file_context(self, paths: list[str], *, limit: int = 20) -> list[LedgerRecord]:
+        """Return active rules scoped to each file or any of its parent directories."""
+        normalized = list(dict.fromkeys(_normalize_scope(path) for path in paths))
+        if not normalized:
+            raise ValueError("paths must contain at least one project-relative path")
+        matches: list[LedgerRecord] = []
+        seen: set[int] = set()
+        rows = self.connection.execute(
+            "SELECT * FROM records WHERE status='active' AND applies_to IS NOT NULL ORDER BY id DESC"
+        ).fetchall()
+        for row in rows:
+            record = self._record(row)
+            scope = record.applies_to
+            if scope is not None and any(
+                scope == "." or path == scope or path.startswith(f"{scope}/") for path in normalized
+            ):
+                if record.id not in seen:
+                    matches.append(record)
+                    seen.add(record.id)
+        matches.sort(key=lambda item: (len(item.applies_to or ""), item.id), reverse=True)
+        return matches[: max(1, min(limit, 100))]
 
     def supersede(self, record_id: int, replacement_id: int | None = None) -> LedgerRecord:
         self.connection.execute("BEGIN IMMEDIATE")

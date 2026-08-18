@@ -16,14 +16,27 @@ def test_records_separate_kinds_and_searches_active_memory(ledger: Ledger):
     ledger.record("observation", "Current database", "SQLite supports FTS5 here", "code_observed", "tests")
 
     assert decision.kind == "decision"
-    assert {item.kind for item in ledger.search("SQLite")} == {"observation", "decision"}
-    assert decision.id in [item.id for item in ledger.context("local SQLite")]
+    assert {item.kind for item in ledger.search(["SQLite"])} == {"observation", "decision"}
+    assert decision.id in [item.id for item in ledger.search(["project memory"])]
 
 
-def test_plain_language_query_does_not_expose_fts_syntax(ledger: Ledger):
+def test_search_accepts_literal_tag_phrases(ledger: Ledger):
     record = ledger.record("observation", "Config file", "The config.py module is local", "code_observed")
 
-    assert ledger.search("Where is config.py?")[0].id == record.id
+    assert ledger.search(["config file", "config.py"])[0].id == record.id
+
+
+def test_search_accepts_free_text_alongside_tags(ledger: Ledger):
+    phrase_match = ledger.record(
+        "observation", "Authentication middleware", "Refresh tokens expire here", "code_observed"
+    )
+    tag_match = ledger.record(
+        "decision", "Session lifetime", "Keep sessions short", "user_confirmed", tags=["token expiry"]
+    )
+
+    found = ledger.search(tags=["token expiry"], phrase="refresh authentication")
+
+    assert {item.id for item in found} == {phrase_match.id, tag_match.id}
 
 
 def test_superseded_history_is_retained_but_not_default_search(ledger: Ledger):
@@ -33,8 +46,8 @@ def test_superseded_history_is_retained_but_not_default_search(ledger: Ledger):
 
     assert updated.status == "superseded"
     assert updated.superseded_by == new.id
-    assert ledger.search("JSON") == []
-    assert ledger.search("JSON", include_inactive=True)[0].id == old.id
+    assert ledger.search(["JSON"]) == []
+    assert ledger.search(["JSON"], include_inactive=True)[0].id == old.id
 
 
 def test_replacement_must_preserve_record_kind(ledger: Ledger):
@@ -61,3 +74,36 @@ def test_disputed_record_can_later_be_superseded(ledger: Ledger):
 def test_rejects_invalid_classification(ledger: Ledger):
     with pytest.raises(ValueError, match="Invalid authority"):
         ledger.record("decision", "Choice", "Something", "certain")  # type: ignore[arg-type]
+
+
+def test_file_context_includes_exact_file_and_parent_directories(ledger: Ledger):
+    root = ledger.record(
+        "documentation", "Repository rule", "Applies everywhere", "code_observed", applies_to="."
+    )
+    package = ledger.record(
+        "observation", "Package rule", "Keep adapters thin", "code_observed", applies_to="src/adapters/"
+    )
+    exact = ledger.record(
+        "decision", "Module rule", "Preserve this wire format", "user_confirmed", applies_to="src/adapters/api.py"
+    )
+    unrelated = ledger.record(
+        "observation", "Other rule", "Only for docs", "code_observed", applies_to="docs"
+    )
+
+    found = ledger.file_context(["./src/adapters/api.py", "src/domain.py"])
+
+    assert {item.id for item in found} == {root.id, package.id, exact.id}
+    assert unrelated.id not in {item.id for item in found}
+
+
+def test_tags_are_searchable_without_polluting_file_context(ledger: Ledger):
+    record = ledger.record(
+        "decision",
+        "Persistence boundary",
+        "Keep this storage choice",
+        "user_confirmed",
+        tags=["sqlite", "ledger storage"],
+    )
+
+    assert ledger.search(["sqlite"])[0].id == record.id
+    assert ledger.file_context(["src/context_ledger/ledger.py"]) == []

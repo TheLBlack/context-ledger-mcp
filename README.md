@@ -4,19 +4,19 @@ Local, explicitly scoped memory for coding agents.
 
 ContextLedger lets an agent keep useful project knowledge between sessions: architectural decisions, code observations, durable documentation, and failed approaches worth avoiding. It stores conclusions, not chat transcripts.
 
-Many agent-memory products assume organization-wide adoption, cloud infrastructure, or a new company policy. ContextLedger is for the developer who wants durable agent memory today: install it locally, enable it only for the repositories you choose, and keep the data in those repositories' private Git metadata. No cloud deployment, subscription, external account, or company-wide rollout is required.
+Many agent-memory products assume organization-wide adoption, cloud infrastructure, or a new company policy. ContextLedger is for the developer who wants durable agent memory today: install it locally, bind it to the projects you choose, and keep the data inside those projects. No cloud deployment, subscription, external account, or company-wide rollout is required.
 
-It is harness- and model-agnostic. ContextLedger exposes standard [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) tools over stdio, so any MCP client can use it. Codex and Claude Code are included below as concrete setup examples, not privileged integrations. By default, each repository has an isolated SQLite database under its private Git metadata:
+It is harness- and model-agnostic. ContextLedger exposes standard [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) tools over stdio, so any MCP client can use it. Codex and Claude Code are included below as concrete setup examples, not privileged integrations. Give the server a project path and it resolves that project's database automatically. For a Git project, storage lives in private Git metadata:
 
 ```text
-<repository>/.git/llm-memory/memory.sqlite
+<project>/.git/llm-memory/memory.sqlite
 ```
 
-There is no account, cloud service, telemetry, network server, global index, or required team rollout. Linked Git worktrees share a ledger because they share a Git common directory. An explicit database path can instead give a directory, workspace, or selected group of repositories one shared ledger.
+When the project has no `.git`, the database is stored at `<project>/.memory/memory.sqlite`. There is no account, cloud service, telemetry, network server, global index, or required team rollout. Linked Git worktrees share a ledger because they share a Git common directory.
 
 ## Quick start
 
-Requirements: Python 3.11 or newer, Git, SQLite with FTS5, and [uv](https://docs.astral.sh/uv/). Normal Python distributions include FTS5.
+Requirements: Python 3.11 or newer, SQLite with FTS5, and [uv](https://docs.astral.sh/uv/). Normal Python distributions include FTS5. Git is optional.
 
 ### 1. Install
 
@@ -32,67 +32,43 @@ context-ledger --help
 
 ### 2. Add it to an MCP client
 
-ContextLedger uses MCP over standard input/output. The following client-specific commands all configure the same executable and arguments, binding one server process to the current repository.
+ContextLedger uses MCP over standard input/output. Register it once as a global server. Every MCP tool call includes the project path, so the same server works across all projects.
 
 #### Claude Code
 
-Run this complete block inside the target repository:
-
-`LEDGER_DB` controls where the database file is stored; it points to the repository's private Git metadata by default, so change that variable in the block if you want another location.
+Run this complete block once:
 
 ```sh
-(
-set -eu
-LEDGER_BIN="$(command -v context-ledger)"
-PROJECT_ROOT="$(git rev-parse --show-toplevel)"
-GIT_COMMON_DIR="$(git -C "$PROJECT_ROOT" rev-parse --path-format=absolute --git-common-dir)"
-LEDGER_DB="$GIT_COMMON_DIR/llm-memory/memory.sqlite"
-test -x "$LEDGER_BIN"
-test -d "$GIT_COMMON_DIR"
-claude mcp add --transport stdio --scope local context-ledger -- \
-  "$LEDGER_BIN" serve --database "$LEDGER_DB"
+claude mcp add --transport stdio --scope user context-ledger -- \
+  "$(command -v context-ledger)" serve
 claude mcp get context-ledger
 
-INSTRUCTIONS_FILE="$HOME/.claude/CLAUDE.md"
-mkdir -p "$(dirname "$INSTRUCTIONS_FILE")"
-if ! grep -Fq "When Context Ledger MCP tools are available" "$INSTRUCTIONS_FILE" 2>/dev/null; then
-  echo >> "$INSTRUCTIONS_FILE"
-  context-ledger snippet >> "$INSTRUCTIONS_FILE"
+mkdir -p "$HOME/.claude"
+if ! grep -Fq "When Context Ledger MCP tools are available" "$HOME/.claude/CLAUDE.md" 2>/dev/null; then
+  printf '\n' >> "$HOME/.claude/CLAUDE.md"
+  context-ledger snippet >> "$HOME/.claude/CLAUDE.md"
 fi
-)
 ```
 
-The second half appends the ContextLedger snippet to Claude Code's default personal instruction file, `~/.claude/CLAUDE.md`. The `if` check prevents duplicates when the block is run again. For project-only instructions, set `INSTRUCTIONS_FILE="$PROJECT_ROOT/CLAUDE.md"`; otherwise change it if your personal file lives elsewhere. Start a new Claude Code session and run `/mcp` to check the connection. See the [Claude Code MCP documentation](https://code.claude.com/docs/en/mcp).
+The block adds one global server and appends the ContextLedger snippet to Claude Code's personal instructions once. Start a new Claude Code session and run `/mcp` to check the connection. See the [Claude Code MCP documentation](https://code.claude.com/docs/en/mcp).
 
 #### Codex
 
-Run this complete block inside the target repository:
-
-`LEDGER_DB` controls where the database file is stored; it points to the repository's private Git metadata by default, so change that variable in the block if you want another location.
+Run this complete block once:
 
 ```sh
-(
-set -eu
-LEDGER_BIN="$(command -v context-ledger)"
-PROJECT_ROOT="$(git rev-parse --show-toplevel)"
-GIT_COMMON_DIR="$(git -C "$PROJECT_ROOT" rev-parse --path-format=absolute --git-common-dir)"
-LEDGER_DB="$GIT_COMMON_DIR/llm-memory/memory.sqlite"
-test -x "$LEDGER_BIN"
-test -d "$GIT_COMMON_DIR"
 codex mcp add context-ledger -- \
-  "$LEDGER_BIN" serve --database "$LEDGER_DB"
+  "$(command -v context-ledger)" serve
 codex mcp list
 
-INSTRUCTIONS_FILE="$HOME/.codex/AGENTS.md"
-mkdir -p "$(dirname "$INSTRUCTIONS_FILE")"
-if ! grep -Fq "When Context Ledger MCP tools are available" "$INSTRUCTIONS_FILE" 2>/dev/null; then
-  echo >> "$INSTRUCTIONS_FILE"
-  context-ledger snippet >> "$INSTRUCTIONS_FILE"
+mkdir -p "$HOME/.codex"
+if ! grep -Fq "When Context Ledger MCP tools are available" "$HOME/.codex/AGENTS.md" 2>/dev/null; then
+  printf '\n' >> "$HOME/.codex/AGENTS.md"
+  context-ledger snippet >> "$HOME/.codex/AGENTS.md"
 fi
-)
 ```
 
-The second half appends the ContextLedger snippet to Codex's default personal instruction file, `~/.codex/AGENTS.md`. The `if` check prevents duplicates when the block is run again. For project-only instructions, set `INSTRUCTIONS_FILE="$PROJECT_ROOT/AGENTS.md"`; otherwise change it if your personal file lives elsewhere. Start a new Codex session and run `/mcp` to check the connection. See the [Codex MCP documentation](https://developers.openai.com/codex/mcp).
+The block adds one global server and appends the ContextLedger snippet to Codex's personal instructions once. Start a new Codex session and run `/mcp` to check the connection. See the [Codex MCP documentation](https://developers.openai.com/codex/mcp).
 
 #### Generic MCP client
 
@@ -103,13 +79,13 @@ If the client has no dedicated setup command, add the equivalent stdio server ob
   "mcpServers": {
     "context-ledger": {
       "command": "/absolute/path/printed/by/command-v/context-ledger",
-      "args": ["serve", "--database", "/absolute/path/to/your/project/.git/llm-memory/memory.sqlite"]
+      "args": ["serve"]
     }
   }
 }
 ```
 
-Use the exact output of `command -v context-ledger` for `command`. Get the correct default database path with `git rev-parse --path-format=absolute --git-common-dir`, then append `/llm-memory/memory.sqlite`. The outer property names vary by client; the stdio command and arguments do not.
+Use the exact output of `command -v context-ledger` for `command`. The outer property names vary by client; the stdio command and arguments do not.
 
 Append the same harness-neutral snippet to that client's instruction file:
 
@@ -126,42 +102,56 @@ If a harness cannot start the server, test the configured executable directly:
 
 ```sh
 /absolute/path/to/context-ledger --help
-/absolute/path/to/context-ledger status --database /absolute/path/to/memory.sqlite
+/absolute/path/to/context-ledger status --project /absolute/path/to/project
 ```
 
 Do not test `serve` directly. It waits silently for MCP messages on standard input.
 
 ## CLI reference
 
-Commands use the Git repository containing the current directory by default. Add `--repository PATH` to target another repository, or `--database PATH` to select any standalone or shared SQLite ledger. The two options are mutually exclusive.
+Direct CLI commands accept `--project PATH` after the command and default to the current working directory. The MCP `serve` command is global and does not take a project; MCP tools provide it per call.
 
 ```sh
-# Create the database and print its path
-context-ledger init
+PROJECT_PATH="$(pwd -P)"
 
-# Show the repository, database path, and active counts
-context-ledger status
+# Create the database and print its path
+context-ledger init --project "$PROJECT_PATH"
+
+# Show the project, database path, and active counts
+context-ledger status --project "$PROJECT_PATH"
 
 # List records
-context-ledger list
-context-ledger list --kind decision --limit 50
-context-ledger list --all
+context-ledger list --project "$PROJECT_PATH"
+context-ledger list --project "$PROJECT_PATH" --limit 50
+context-ledger list --project "$PROJECT_PATH" --all
 
 # Inspect or search records
-context-ledger inspect 1
-context-ledger search "SQLite storage"
-context-ledger search --kind failed_attempt --all "old approach"
+context-ledger inspect --project "$PROJECT_PATH" 1
+context-ledger search --project "$PROJECT_PATH" --tags sqlite "ledger storage"
+context-ledger search --project "$PROJECT_PATH" --phrase "why did the old architecture fail" --all
+context-ledger search --project "$PROJECT_PATH" --tags architecture --phrase "old approach"
+
+# Retrieve rules for files and their parent directories
+context-ledger file-context --project "$PROJECT_PATH" src/context_ledger/server.py tests/test_server.py
 
 # Record durable knowledge
-context-ledger record decision \
+context-ledger record --project "$PROJECT_PATH" decision \
   "Database choice" \
   "Use SQLite with FTS5; no embeddings initially" \
   --authority user_confirmed \
-  --source "architecture discussion"
+  --source "architecture discussion" \
+  --tags sqlite "ledger storage"
+
+# Record compact knowledge for one file or directory
+context-ledger record --project "$PROJECT_PATH" observation \
+  "MCP handlers stay thin" \
+  "Keep storage and matching logic in ledger.py" \
+  --authority code_observed \
+  --applies-to src/context_ledger/server.py
 
 # Preserve lifecycle history
-context-ledger supersede 1 --replacement 2
-context-ledger dispute 3
+context-ledger supersede --project "$PROJECT_PATH" 1 --replacement 2
+context-ledger dispute --project "$PROJECT_PATH" 3
 
 # Inspect packaged instructions
 context-ledger snippet
@@ -173,86 +163,56 @@ context-ledger prompt --path
 context-ledger serve
 ```
 
-Record kinds are `decision`, `observation`, `documentation`, and `failed_attempt`. Evidence authorities are `user_confirmed`, `code_observed`, and `agent_inferred`. Authority describes the source of a claim, not confidence in it.
+Record kinds are informational metadata: `decision`, `observation`, `documentation`, and `failed_attempt`. Retrieval does not filter by kind. Evidence authorities are `user_confirmed`, `code_observed`, and `agent_inferred`. Authority describes the source of a claim, not confidence in it.
 
 Command results are JSON except for `init`, `prompt`, and `snippet`.
 
-## Multiple projects and shared ledgers
+## Project routing
 
-Install ContextLedger once. Give repositories separate database paths for isolation:
+One global MCP server routes each tool call to the supplied `project_path`:
 
 ```text
-one ContextLedger installation
-├── project A process → project-a/.git/llm-memory/memory.sqlite
-└── project B process → project-b/.git/llm-memory/memory.sqlite
+one ContextLedger server
+├── project_path=/projects/a → /projects/a/.git/llm-memory/memory.sqlite
+└── project_path=/projects/b → /projects/b/.git/llm-memory/memory.sqlite
 ```
 
-Processes communicate through separate stdin/stdout streams. They do not use ports or share global state and remain idle between calls.
-
-For a client session that opens more than one repository:
-
-```json
-{
-  "mcpServers": {
-    "ledger-project-a": {
-      "command": "/absolute/path/to/context-ledger",
-      "args": ["serve", "--database", "/projects/project-a/.git/llm-memory/memory.sqlite"]
-    },
-    "ledger-project-b": {
-      "command": "/absolute/path/to/context-ledger",
-      "args": ["serve", "--database", "/projects/project-b/.git/llm-memory/memory.sqlite"]
-    }
-  }
-}
-```
-
-Each process is bound to one database. To share memory across a workspace or a selected group of repositories, point their MCP connections at the same path:
-
-```json
-{
-  "mcpServers": {
-    "context-ledger": {
-      "command": "/absolute/path/to/context-ledger",
-      "args": ["serve", "--database", "/projects/product/.context-ledger/memory.sqlite"]
-    }
-  }
-}
-```
-
-The containing directory does not need to be a Git repository. Every connection using that path reads and writes the same ledger. Use separate paths where isolation matters.
+The agent must pass the absolute root whose memory the call concerns. For a workspace containing several repositories, it uses each repository root for repo-specific work, or their common workspace root when the knowledge should be shared. A root without Git keeps its ledger in `.memory`.
 
 ## Storage, privacy, and behavior
 
-Without an explicit database, ContextLedger asks Git for its common metadata directory and stores SQLite below it. The Quick Start passes that same path explicitly at the MCP connection level. Ordinary Git add and commit operations cannot include a database inside Git metadata.
+Each MCP tool call receives a project path and resolves storage itself. It uses the Git common metadata directory when `<project>/.git` exists, so linked worktrees share memory and ordinary Git add and commit operations cannot include the database. Without Git it uses `<project>/.memory/memory.sqlite`.
 
-The database is local but not encrypted. Any user or process that can read its path can read it. Backups or copies containing Git metadata or an explicitly selected shared path may also contain the ledger.
+Storage is resolved independently for each tool call from its required absolute `project_path`. That path defines the memory boundary; it may be one repository or a shared workspace. Paths passed to `get_file_context.paths` and `record_memory.applies_to` are normalized relative to that root and used for matching, not filesystem lookups.
+
+The database is local but not encrypted. Any user or process that can read its path can read it. Backups or copies containing Git metadata or `.memory` may also contain the ledger.
 
 The MCP server provides five tools:
 
-- `get_project_context`: retrieve active knowledge relevant to a task.
-- `search_memory`: search active or historical records.
-- `record_memory`: add a durable conclusion.
-- `supersede_memory`: retire an obsolete record while preserving history.
-- `dispute_memory`: flag unresolved conflicting knowledge.
+- `get_file_context(project_path, paths)`: retrieve active knowledge attached to files or parent directories.
+- `search_memory(project_path, ...)`: search active or historical records using tags, a phrase, or both.
+- `record_memory(project_path, ...)`: add durable knowledge with optional `applies_to` and `tags`.
+- `supersede_memory(project_path, ...)`: retire an obsolete record while preserving history.
+- `dispute_memory(project_path, ...)`: flag unresolved conflicting knowledge.
 
-Search is lexical SQLite FTS5 with BM25 ranking. There are no embeddings, vector search, automatic code indexing, or repository scanning.
+`applies_to` is a project-relative file or directory path. File lookup accepts several paths in one call, normalizes separators, and matches exact paths plus ancestor directories. It does not scan the project. Records without `applies_to` remain available through `search_memory`.
+
+Search is lexical SQLite FTS5 with BM25 ranking across titles, content, sources, and tags. It accepts one to three exact tag phrases, a free-text phrase whose terms are matched broadly, or both; matches are combined with OR. Tags are lowercase phrases made from stable subsystem or domain nouns. There are no embeddings, vector search, automatic code indexing, or project scanning.
 
 ## Limitations and ideas
 
 Current limitations:
 
 - Lexical search can miss synonyms and conceptual matches.
-- There is no record editing, deletion command, migration UI, or automatic deduplication.
+- There is no record editing, deletion command, or automatic deduplication.
 - The server does not verify an agent's claims or whether a user really confirmed one.
 - MCP instructions guide a client but cannot force it to retrieve or record memory.
 - Separate processes rely on normal SQLite locking and may briefly contend.
-- Schema changes do not yet have a versioned migration system.
 - The local database is not an encryption or access-control boundary.
 - ContextLedger is designed for modest local workloads, not a multi-user service.
 
 Possible next work:
 
-- [ ] Add schema versioning and tested migrations.
 - [ ] Measure retrieval misses before considering semantic or vector search.
 - [ ] Add provenance-preserving merge and deduplication assistance.
 - [ ] Add concurrency and busy-timeout tests.
@@ -273,12 +233,12 @@ uv run pytest -q
 uv run context-ledger status
 ```
 
-The final status command expects the checkout to be a Git repository. Tests create temporary repositories and do not write ledger data into this project.
+Tests create temporary projects and do not write ledger data into this project.
 
 Run the development checkout as an MCP server:
 
 ```sh
-uv run context-ledger serve --repository /absolute/path/to/project
+uv run context-ledger serve
 ```
 
 The implementation is intentionally small:
@@ -286,7 +246,7 @@ The implementation is intentionally small:
 ```text
 src/context_ledger/cli.py       command-line interface
 src/context_ledger/ledger.py    SQLite records, search, and lifecycle
-src/context_ledger/paths.py     Git repository and database paths
+src/context_ledger/paths.py     Project and database paths
 src/context_ledger/server.py    MCP server and tools
 src/context_ledger/prompts/     server and harness instructions
 tests/                          CLI, storage, paths, prompts, and MCP tests

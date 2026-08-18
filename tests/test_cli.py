@@ -2,6 +2,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from context_ledger.cli import run
 
 
@@ -12,7 +14,7 @@ def git_repo(tmp_path: Path) -> Path:
 
 def test_cli_init_record_search_and_status(tmp_path: Path, capsys):
     repo = git_repo(tmp_path)
-    common = ["--repository", str(repo)]
+    common = ["--project", str(repo)]
 
     assert run(["init", *common]) == 0
     capsys.readouterr()
@@ -20,7 +22,7 @@ def test_cli_init_record_search_and_status(tmp_path: Path, capsys):
     created = json.loads(capsys.readouterr().out)
     assert created["title"] == "Database"
 
-    assert run(["search", *common, "SQLite"]) == 0
+    assert run(["search", *common, "--tags", "SQLite"]) == 0
     output = json.loads(capsys.readouterr().out)
     assert output[0]["kind"] == "decision"
 
@@ -44,37 +46,35 @@ def test_cli_snippet_matches_packaged_harness_snippet(capsys):
     assert capsys.readouterr().out == load_harness_snippet()
 
 
-def test_cli_serve_reports_invalid_repository_without_traceback(tmp_path: Path, capsys):
-    missing = tmp_path / "missing"
+def test_cli_serve_does_not_accept_a_project(capsys):
+    with pytest.raises(SystemExit) as error:
+        run(["serve", "--project", "/tmp/project"])
 
-    assert run(["serve", "--repository", str(missing)]) == 2
-    error = capsys.readouterr().err
-    assert "Unable to run Git" in error
-    assert "Traceback" not in error
+    assert error.value.code == 2
+    assert "unrecognized arguments: --project" in capsys.readouterr().err
 
 
-def test_cli_explicit_database_works_outside_git(tmp_path: Path, capsys):
-    database = tmp_path / "shared" / "memory.sqlite"
-    common = ["--database", str(database)]
+def test_cli_project_works_outside_git(tmp_path: Path, capsys):
+    common = ["--project", str(tmp_path)]
 
-    assert run(["record", *common, "decision", "Scope", "Share this ledger", "--authority", "user_confirmed"]) == 0
+    assert run(["record", *common, "decision", "Scope", "Keep this ledger", "--authority", "user_confirmed"]) == 0
     capsys.readouterr()
     assert run(["status", *common]) == 0
     status = json.loads(capsys.readouterr().out)
 
-    assert status["database"] == str(database)
+    assert status["project"] == str(tmp_path)
+    assert status["database"] == str(tmp_path / ".memory" / "memory.sqlite")
     assert status["active_records"]["decision"] == 1
-    assert "repository" not in status
 
 
-def test_cli_rejects_repository_and_database_together(tmp_path: Path, capsys):
-    repo = git_repo(tmp_path / "repo")
+def test_cli_does_not_offer_kind_filters(tmp_path: Path, capsys):
+    repo = git_repo(tmp_path)
 
-    try:
-        run(["status", "--repository", str(repo), "--database", str(tmp_path / "memory.sqlite")])
-    except SystemExit as error:
-        assert error.code == 2
-    else:
-        raise AssertionError("argparse should reject conflicting storage options")
-
-    assert "not allowed with argument" in capsys.readouterr().err
+    for command in ("list", "search"):
+        arguments = [command, "--project", str(repo), "--kind", "decision"]
+        if command == "search":
+            arguments.extend(["--tags", "SQLite"])
+        with pytest.raises(SystemExit) as error:
+            run(arguments)
+        assert error.value.code == 2
+        assert "unrecognized arguments: --kind" in capsys.readouterr().err

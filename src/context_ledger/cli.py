@@ -8,21 +8,15 @@ from pathlib import Path
 from typing import Sequence
 
 from .ledger import AUTHORITIES, KINDS, Ledger, LedgerRecord
-from .paths import find_repository_root, resolve_database_path
+from .paths import database_path, project_path
 from .server import create_server, load_harness_snippet, load_instructions
 
 
-def _add_storage(parser: argparse.ArgumentParser) -> None:
-    storage = parser.add_mutually_exclusive_group()
-    storage.add_argument(
-        "--repository",
+def _add_project(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--project",
         type=Path,
-        help="target Git repository (defaults to the repository containing the current directory)",
-    )
-    storage.add_argument(
-        "--database",
-        type=Path,
-        help="use this SQLite database instead of deriving one from Git metadata",
+        help="project path (defaults to the harness working directory)",
     )
 
 
@@ -31,46 +25,51 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     serve = subparsers.add_parser("serve", help="run the MCP server over stdio")
-    _add_storage(serve)
 
-    init = subparsers.add_parser("init", help="create and report the repository's private ledger database")
-    _add_storage(init)
+    init = subparsers.add_parser("init", help="create and report the project's private ledger database")
+    _add_project(init)
 
     status = subparsers.add_parser("status", help="show storage location and active record counts")
-    _add_storage(status)
+    _add_project(status)
 
     list_parser = subparsers.add_parser("list", help="list recent records")
-    _add_storage(list_parser)
-    list_parser.add_argument("--kind", choices=sorted(KINDS))
+    _add_project(list_parser)
     list_parser.add_argument("--all", action="store_true", help="include superseded and disputed records")
     list_parser.add_argument("--limit", type=int, default=20)
 
     inspect = subparsers.add_parser("inspect", help="show one record by id")
-    _add_storage(inspect)
+    _add_project(inspect)
     inspect.add_argument("record_id", type=int)
 
-    search = subparsers.add_parser("search", help="search record titles, content, and sources")
-    _add_storage(search)
-    search.add_argument("query")
-    search.add_argument("--kind", choices=sorted(KINDS))
+    search = subparsers.add_parser("search", help="search records using tags, a phrase, or both")
+    _add_project(search)
+    search.add_argument("--tags", nargs="+", help="one to three exact tag phrases")
+    search.add_argument("--phrase", help="free text whose terms are matched broadly")
     search.add_argument("--all", action="store_true", help="include superseded and disputed records")
     search.add_argument("--limit", type=int, default=10)
 
+    file_context = subparsers.add_parser("file-context", help="show active rules for files and parent directories")
+    _add_project(file_context)
+    file_context.add_argument("paths", nargs="+")
+    file_context.add_argument("--limit", type=int, default=20)
+
     record = subparsers.add_parser("record", help="record a durable project conclusion")
-    _add_storage(record)
+    _add_project(record)
     record.add_argument("kind", choices=sorted(KINDS))
     record.add_argument("title")
     record.add_argument("content")
     record.add_argument("--authority", choices=sorted(AUTHORITIES), required=True)
     record.add_argument("--source")
+    record.add_argument("--applies-to", help="project-relative file or directory governed by this record")
+    record.add_argument("--tags", nargs="+", help="one to three stable search phrases")
 
     supersede = subparsers.add_parser("supersede", help="mark a record obsolete")
-    _add_storage(supersede)
+    _add_project(supersede)
     supersede.add_argument("record_id", type=int)
     supersede.add_argument("--replacement", type=int)
 
     dispute = subparsers.add_parser("dispute", help="mark a record disputed")
-    _add_storage(dispute)
+    _add_project(dispute)
     dispute.add_argument("record_id", type=int)
 
     prompt = subparsers.add_parser("prompt", help="print the exact instructions used by the MCP server")
@@ -91,8 +90,8 @@ def _json(value: LedgerRecord | list[LedgerRecord] | dict[str, object]) -> None:
     print(json.dumps(payload, indent=2, ensure_ascii=False))
 
 
-def _ledger(repository: Path | None, database: Path | None) -> Ledger:
-    return Ledger(resolve_database_path(repository, database))
+def _ledger(project: Path | None) -> Ledger:
+    return Ledger(database_path(project))
 
 
 def run(argv: Sequence[str] | None = None) -> int:
@@ -110,31 +109,42 @@ def run(argv: Sequence[str] | None = None) -> int:
 
     try:
         if args.command == "serve":
-            create_server(args.repository, args.database).run(transport="stdio")
+            create_server().run(transport="stdio")
             return 0
         if args.command == "init":
-            with _ledger(args.repository, args.database) as ledger:
+            with _ledger(args.project) as ledger:
                 print(ledger.path)
             return 0
         if args.command == "status":
-            with _ledger(args.repository, args.database) as ledger:
+            with _ledger(args.project) as ledger:
                 payload: dict[str, object] = {
+                    "project": str(project_path(args.project)),
                     "database": str(ledger.path),
                     "active_records": ledger.counts(),
                 }
-                if args.database is None:
-                    payload["repository"] = str(find_repository_root(args.repository))
                 _json(payload)
             return 0
-        with _ledger(args.repository, args.database) as ledger:
+        with _ledger(args.project) as ledger:
             if args.command == "list":
-                _json(ledger.list_records(kind=args.kind, include_inactive=args.all, limit=args.limit))
+                _json(ledger.list_records(include_inactive=args.all, limit=args.limit))
             elif args.command == "inspect":
                 _json(ledger.get(args.record_id))
             elif args.command == "search":
-                _json(ledger.search(args.query, kind=args.kind, include_inactive=args.all, limit=args.limit))
+                _json(ledger.search(args.tags, args.phrase, include_inactive=args.all, limit=args.limit))
+            elif args.command == "file-context":
+                _json(ledger.file_context(args.paths, limit=args.limit))
             elif args.command == "record":
-                _json(ledger.record(args.kind, args.title, args.content, args.authority, args.source))
+                _json(
+                    ledger.record(
+                        args.kind,
+                        args.title,
+                        args.content,
+                        args.authority,
+                        args.source,
+                        args.applies_to,
+                        args.tags,
+                    )
+                )
             elif args.command == "supersede":
                 _json(ledger.supersede(args.record_id, args.replacement))
             elif args.command == "dispute":
